@@ -1,0 +1,43 @@
+.login-register-link{text-align:center;font-size:8px;color:#7c887e;margin:12px 0 0}
+.login-register-link a,.register-topbar>div a{color:#4b8056;font-weight:650}
+.login-register-link a:hover,.register-topbar>div a:hover{text-decoration:underline}
+
+.register-page{min-height:100vh;background:#f4f6f1;color:#203128;padding:0 24px;display:flex;flex-direction:column}
+.register-topbar{height:72px;width:min(1160px,100%);margin:0 auto;display:flex;align-items:center;justify-content:space-between}
+.register-topbar>div{font-size:9px;color:#7d887f}
+.register-topbar>div a{margin-left:4px}
+.register-shell{width:min(1050px,100%);margin:30px auto 44px;display:grid;grid-template-columns:.72fr 1.28fr;align-items:start;gap:45px}
+.register-intro{position:sticky;top:40px;padding:26px 0}
+.register-intro h1{font-size:45px;letter-spacing:-2.5px;line-height:1.05;font-weight:560;margin:18px 0 13px}
+.register-intro h1 em{font-style:normal;color:#588864}
+.register-intro>p{max-width:300px;font-size:10px;line-height:1.8;color:#7e8980}
+.register-steps{display:flex;align-items:center;gap:8px;margin-top:36px}
+.register-steps>div{display:flex;flex-direction:column;gap:6px;white-space:nowrap}
+.register-steps>div span{font-size:7px;font-weight:750;letter-spacing:.5px;color:#68906c}
+.register-steps>div strong{font-size:8px;color:#66746a;font-weight:600}
+.register-steps>i{height:1px;width:24px;background:#dce4d9;margin-top:-17px}
+.register-card{background:#fffefa;border:1px solid #e5eae2;border-radius:7px;padding:25px 27px 20px;box-shadow:0 14px 40px rgba(48,72,48,.04)}
+.register-card-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:19px}
+.register-card-heading h2{font-size:19px;letter-spacing:-.5px;color:#2d3e33;margin:7px 0 4px}
+.register-card-heading p{font-size:8px;color:#8b958c;margin:0}
+.register-section-label{font-size:7px;letter-spacing:1px;font-weight:750;color:#638267;padding-bottom:8px;border-bottom:1px solid #edf0e9;margin-bottom:12px}
+.shop-details-label{margin-top:20px}
+.register-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px 13px}
+.register-field{min-width:0;display:flex;flex-direction:column;gap:6px}
+.register-field label{font-size:7px;letter-spacing:.6px;font-weight:700;color:#6f7c71}
+.register-field input,.register-field textarea{width:100%;border:1px solid #e1e7df;border-radius:4px;background:#fff;padding:0 10px;color:#34463a;font:inherit;font-size:9px;outline:none}
+.register-field input{height:36px}
+.register-field textarea{resize:vertical;min-height:64px;padding:9px 10px}
+.register-field input:focus,.register-field textarea:focus{border-color:#83a987;box-shadow:0 0 0 3px rgba(103,153,109,.1)}
+.register-field input::placeholder,.register-field textarea::placeholder{color:#a3aba3}
+.register-field>small{font-size:7px;color:#929b92}
+.full-width{grid-column:1/-1}
+.register-privacy{display:flex;align-items:flex-start;gap:8px;margin-top:17px;padding:9px 10px;background:#f3f6ef;border-radius:4px}
+.register-privacy>span{height:14px;width:14px;border:1px solid #cddcc8;border-radius:50%;display:grid;place-items:center;flex:none;color:#67896a;font-size:8px}
+.register-privacy p{font-size:7px;line-height:1.6;color:#78857a;margin:0}
+.register-submit{width:100%;margin-top:13px}
+.register-terms{text-align:center;font-size:7px;color:#a0a8a0;margin:11px 0 0}
+.register-page>.login-footer{margin-top:auto;text-align:center}
+.register-page .login-error{margin-top:12px}
+@media(max-width:760px){.register-shell{grid-template-columns:1fr;gap:10px;margin-top:12px}.register-intro{position:static;padding:15px 0}.register-intro h1{font-size:34px;margin:10px 0 8px}.register-intro>p{max-width:480px;margin:0}.register-steps{display:none}.register-card{padding:20px 18px}.register-topbar{height:63px}}
+@media(max-width:460px){.register-page{padding-inline:14px}.register-topbar>div{font-size:8px}.register-grid{grid-template-columns:1fr;gap:10px}.full-width{grid-column:auto}.register-intro h1 br{display:none}.register-card-heading h2{font-size:17px}}
