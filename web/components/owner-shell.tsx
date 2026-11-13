@@ -2,7 +2,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import OwnerLogout from "@/components/owner-logout";
 
-export default function OwnerShell({ children, ownerName, shopName, active }: { children: ReactNode; ownerName: string; shopName: string; active: "dashboard" | "services" }) {
+export default function OwnerShell({ children, ownerName, shopName, active }: { children: ReactNode; ownerName: string; shopName: string; active: "dashboard" | "services" | "orders" | "scanner" | "queue" }) {
   return (
     <main className="owner-app">
       <aside className="owner-sidebar">
@@ -12,9 +12,9 @@ export default function OwnerShell({ children, ownerName, shopName, active }: { 
         <nav className="owner-nav" aria-label="Shop owner navigation">
           <Link className={active === "dashboard" ? "active" : ""} href="/owner"><span className="owner-nav-icon">▦</span>Dashboard</Link>
           <Link className={active === "services" ? "active" : ""} href="/owner/services"><span className="owner-nav-icon">☷</span>Services &amp; pricing</Link>
-          <span className="owner-nav-disabled"><span className="owner-nav-icon">▤</span>Print orders <small>SOON</small></span>
-          <span className="owner-nav-disabled"><span className="owner-nav-icon">⌕</span>QR scanner <small>SOON</small></span>
-          <span className="owner-nav-disabled"><span className="owner-nav-icon">≋</span>Printing queue <small>SOON</small></span>
+          <Link className={active === "orders" ? "active" : ""} href="/owner/orders"><span className="owner-nav-icon">▤</span>Print orders</Link>
+          <Link className={active === "scanner" ? "active" : ""} href="/owner/scanner"><span className="owner-nav-icon">⌕</span>QR scanner</Link>
+          <Link className={active === "queue" ? "active" : ""} href="/owner/queue"><span className="owner-nav-icon">≋</span>Printing queue</Link>
         </nav>
         <div className="owner-sidebar-bottom"><div className="owner-support-card"><span>?</span><strong>Need help?</strong><small>We’re here to help you get set up.</small></div><div className="owner-profile"><span className="owner-profile-avatar">{ownerName.split(/\s+/).map((part) => part[0]).slice(0, 2).join("").toUpperCase()}</span><span><strong>{ownerName}</strong><small>Shop owner</small></span><OwnerLogout /></div></div>
       </aside>

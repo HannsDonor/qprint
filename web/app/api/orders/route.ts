@@ -5,31 +5,20 @@ import { PDFDocument } from "pdf-lib";
 import { NextResponse } from "next/server";
 import type { RowDataPacket } from "mysql2";
 import { db } from "@/lib/db";
+import { cleanupExpiredDocuments, documentExpiresAt } from "@/lib/document-cleanup";
 
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
 const MAX_ORDER_SIZE = 50 * 1024 * 1024;
 const MAX_FILES = 5;
 const MAX_PAGES_PER_FILE = 10_000;
-const allowedPapers = new Set(["A4", "A3", "Letter", "Legal"]);
+const allowedPapers = new Set(["A4", "A3", "A5", "A2", "A1", "A0", "Short", "Long", "Letter", "Legal"]);
 const allowedColors = new Set(["black_white", "colored"]);
 
 type UploadedDocument = { file: File; bytes: Buffer; pageCount: number; storedName: string; path: string };
 
-function countSelectedPages(range: string, pageCount: number): number {
-  if (!range.trim()) return pageCount;
-  const selected = new Set<number>();
-  const segments = range.split(",").map((segment) => segment.trim());
-  if (segments.some((segment) => !segment)) throw new Error("Enter a valid page range, such as 1-3, 5.");
-
-  for (const segment of segments) {
-    const match = /^(\d+)(?:\s*-\s*(\d+))?$/.exec(segment);
-    if (!match) throw new Error("Enter a valid page range, such as 1-3, 5.");
-    const start = Number(match[1]);
-    const end = Number(match[2] ?? match[1]);
-    if (start < 1 || end < start || end > pageCount) throw new Error(`Page range ${segment} is outside this ${pageCount}-page document.`);
-    for (let page = start; page <= end; page++) selected.add(page);
-  }
-  return selected.size;
+function mysqlBoolean(value: unknown) {
+  if (value === true || value === 1 || value === "1") return true;
+  return Buffer.isBuffer(value) && value.length > 0 && value[0] === 1;
 }
 
 function money(cents: number) {
@@ -37,6 +26,7 @@ function money(cents: number) {
 }
 
 export async function POST(request: Request) {
+  await cleanupExpiredDocuments().catch((error: unknown) => console.error("Could not clean up expired documents before order creation", error));
   const origin = request.headers.get("origin");
   const requestHost = (request.headers.get("x-forwarded-host") ?? request.headers.get("host"))?.toLowerCase();
   if (origin && requestHost) {
@@ -64,15 +54,13 @@ export async function POST(request: Request) {
   const colorMode = String(formData.get("colorMode") ?? "");
   const copies = Number(formData.get("copies"));
   const orientation = String(formData.get("orientation") ?? "");
-  const pageRange = String(formData.get("pageRange") ?? "").trim();
-  const duplex = formData.get("duplex") === "true";
   const priority = formData.get("priority") === "true";
   const quotedTotalCents = Number(formData.get("quotedTotalCents"));
   const files = formData.getAll("documents").filter((item): item is File => item instanceof File);
 
   if (!Number.isSafeInteger(shopId) || shopId < 1) return NextResponse.json({ error: "Choose a valid print shop." }, { status: 400 });
   if (!allowedPapers.has(paperSize) || !allowedColors.has(colorMode)) return NextResponse.json({ error: "Choose valid print settings." }, { status: 400 });
-  if (!Number.isInteger(copies) || copies < 1 || copies > 99) return NextResponse.json({ error: "Copies must be between 1 and 99." }, { status: 400 });
+  if (!Number.isInteger(copies) || copies < 1 || copies > 999) return NextResponse.json({ error: "Copies must be a whole number between 1 and 999." }, { status: 400 });
   if (!Number.isSafeInteger(quotedTotalCents) || quotedTotalCents < 0) return NextResponse.json({ error: "Review the order total before submitting." }, { status: 400 });
   if (orientation !== "portrait" && orientation !== "landscape") return NextResponse.json({ error: "Choose a valid page orientation." }, { status: 400 });
   if (files.length < 1 || files.length > MAX_FILES) return NextResponse.json({ error: `Upload between 1 and ${MAX_FILES} PDF files.` }, { status: 400 });
@@ -93,7 +81,6 @@ export async function POST(request: Request) {
       const pdf = await PDFDocument.load(bytes, { updateMetadata: false });
       const pageCount = pdf.getPageCount();
       if (pageCount < 1 || pageCount > MAX_PAGES_PER_FILE) throw new Error(`${file.name} must contain between 1 and ${MAX_PAGES_PER_FILE} pages.`);
-      countSelectedPages(pageRange, pageCount);
       documents.push({ file, bytes, pageCount, storedName: `${randomBytes(24).toString("hex")}.pdf`, path: "" });
     }
   } catch (error) {
@@ -125,25 +112,25 @@ export async function POST(request: Request) {
           WHERE s.id = ? FOR UPDATE`, [shopId]);
     const shop = shopRows[0];
     if (!shop || !shop.is_active) throw new Error("This print shop is no longer available.");
-    if (priority && !shop.priority_enabled) throw new Error("Priority printing is no longer available at this shop.");
+    if (priority && !mysqlBoolean(shop.priority_enabled)) throw new Error("Priority printing is no longer available at this shop.");
 
     const [priceRows] = await connection.query<(RowDataPacket & {
       service_id: number;
       service_name: string;
       price_id: number;
+      color_mode: "black_white" | "colored";
       price: string;
-    })[]>(`SELECT ss.id AS service_id, ss.service_name, sp.id AS price_id, sp.price
+    })[]>(`SELECT ss.id AS service_id, ss.service_name, sp.id AS price_id, sp.color_mode, sp.price
           FROM shop_services ss
           INNER JOIN shop_service_prices sp ON sp.service_id = ss.id
-          WHERE ss.shop_id = ? AND ss.category = 'printing' AND ss.pricing_type = 'per_page'
-            AND ss.is_available = 1 AND ss.is_archived = 0 AND sp.is_available = 1
-            AND sp.paper_size = ? AND sp.color_mode = ? AND (sp.duplex = ? OR sp.duplex IS NULL)
-          ORDER BY (sp.duplex = ?) DESC, sp.id ASC
-          LIMIT 1 FOR UPDATE`, [shopId, paperSize, colorMode, duplex ? 1 : 0, duplex ? 1 : 0]);
+          WHERE ss.shop_id = ? AND ss.service_name = 'Document Printing' AND ss.category = 'printing'
+            AND ss.pricing_type = 'per_page' AND ss.is_available = 1 AND ss.is_archived = 0
+            AND sp.color_mode = ? AND sp.is_available = 1
+          ORDER BY sp.id ASC LIMIT 1 FOR UPDATE`, [shopId, colorMode]);
     const priceOption = priceRows[0];
     if (!priceOption) throw new Error("That print option is no longer available at the selected shop. Go back and choose another option.");
 
-    const selectedPages = documents.reduce((sum, document) => sum + countSelectedPages(pageRange, document.pageCount), 0);
+    const selectedPages = documents.reduce((sum, document) => sum + document.pageCount, 0);
     const quantity = selectedPages * copies;
     const unitPriceCents = Math.round(Number(priceOption.price) * 100);
     const printTotalCents = quantity * unitPriceCents;
@@ -155,7 +142,7 @@ export async function POST(request: Request) {
     const jobCode = `QP-${randomBytes(5).toString("hex").toUpperCase()}`;
     const qrToken = randomBytes(32).toString("base64url");
     const qrTokenHash = createHash("sha256").update(qrToken).digest("hex");
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const expiresAt = documentExpiresAt();
 
     const [jobResult] = await connection.execute<import("mysql2").ResultSetHeader>(`INSERT INTO print_jobs
       (job_code, customer_id, shop_id, print_type, status, base_price, priority_fee, total_price, qr_token_hash, expires_at)
@@ -173,14 +160,14 @@ export async function POST(request: Request) {
         VALUES (?, ?, ?, ?, ?, 'application/pdf', ?, ?)`, [jobId, originalFilename, document.storedName, document.path, document.file.size, document.pageCount, expiresAt]);
     }
 
-    await connection.execute(`INSERT INTO print_settings (job_id, paper_size, color_mode, copies, page_range, orientation, duplex, pages_per_sheet)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 1)`, [jobId, paperSize, colorMode, copies, pageRange || null, orientation, duplex ? 1 : 0]);
+    await connection.execute(`INSERT INTO print_settings (job_id, paper_size, color_mode, copies, orientation)
+      VALUES (?, ?, ?, ?, ?)`, [jobId, paperSize, colorMode, copies, orientation]);
 
     for (const document of documents) {
-      const documentQuantity = countSelectedPages(pageRange, document.pageCount) * copies;
+      const documentQuantity = document.pageCount * copies;
       await connection.execute(`INSERT INTO print_job_items
         (job_id, service_id, service_price_id, service_name, option_name, quantity, unit_price, subtotal)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [jobId, priceOption.service_id, priceOption.price_id, priceOption.service_name, `${paperSize} ${colorMode === "black_white" ? "Black & White" : "Color"}${duplex ? " · Double-sided" : ""}`, documentQuantity, money(unitPriceCents), money(documentQuantity * unitPriceCents)]);
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [jobId, priceOption.service_id, priceOption.price_id, priceOption.service_name, colorMode === "black_white" ? "Black & White" : "Colored", documentQuantity, money(unitPriceCents), money(documentQuantity * unitPriceCents)]);
     }
 
     await connection.execute(`INSERT INTO payments (job_id, amount, payment_method, payment_status)
@@ -197,7 +184,7 @@ export async function POST(request: Request) {
       expiresAt: expiresAt.toISOString(),
       price: { printing: money(printTotalCents), priority: money(priorityFeeCents), total: money(totalCents), currency: "PHP" },
       documents: documents.map((document) => ({ name: document.file.name, pages: document.pageCount })),
-      settings: { paperSize, colorMode, copies, pageRange: pageRange || null, orientation, duplex, priority },
+      settings: { paperSize, colorMode, copies, orientation, priority },
     }, { status: 201 });
   } catch (error) {
     await connection.rollback().catch((rollbackError: unknown) => console.error("Could not roll back QPrint order", rollbackError));

@@ -71,7 +71,6 @@ export async function POST(request: Request) {
     }
 
     const [shops] = await db.query<(RowDataPacket & { id: number })[]>(`SELECT id FROM shops WHERE owner_id = ? AND is_active = 1 ORDER BY id LIMIT 1`, [user.id]);
-    if (!shops[0]) return NextResponse.json({ error: "This account has no active shop. Contact QPrint support." }, { status: 403 });
 
     const session = await getOwnerSession();
     session.userId = user.id;
@@ -80,7 +79,7 @@ export async function POST(request: Request) {
     await session.save();
     attemptsByAddress.delete(address);
 
-    return NextResponse.json({ ok: true, redirectTo: "/owner" });
+    return NextResponse.json({ ok: true, redirectTo: shops[0] ? "/owner" : "/register/shop" });
   } catch (error) {
     console.error("QPrint owner sign in failed", error);
     return NextResponse.json({ error: "Could not sign in. Check the database and session configuration." }, { status: 503 });

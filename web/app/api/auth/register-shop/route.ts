@@ -1,4 +1,4 @@
-import { randomBytes, scrypt } from "node:crypto";
+import { randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { getOwnerSession } from "@/lib/session";
@@ -8,6 +8,18 @@ function hashPassword(password: string, salt: string) {
     scrypt(password, salt, 64, { N: 16_384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 }, (error, derived) => {
       if (error) reject(error);
       else resolve(`scrypt$${salt}$${derived.toString("hex")}`);
+    });
+  });
+}
+
+function verifyPassword(password: string, storedHash: string) {
+  return new Promise<boolean>((resolve, reject) => {
+    const [algorithm, salt, encoded] = storedHash.split("$");
+    if (algorithm !== "scrypt" || !salt || !/^[a-f\d]{128}$/i.test(encoded ?? "")) return resolve(false);
+    scrypt(password, salt, 64, { N: 16_384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 }, (error, derived) => {
+      if (error) return reject(error);
+      const expected = Buffer.from(encoded, "hex");
+      resolve(expected.length === derived.length && timingSafeEqual(expected, derived));
     });
   });
 }
@@ -42,13 +54,6 @@ export async function POST(request: Request) {
   if (description.length > 20_000) return NextResponse.json({ error: "The shop description is too long." }, { status: 400 });
   if (shopEmail && (shopEmail.length > 190 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(shopEmail))) return NextResponse.json({ error: "Enter a valid shop email address." }, { status: 400 });
 
-  const salt = randomBytes(16).toString("hex");
-  let passwordHash: string;
-  try { passwordHash = await hashPassword(password, salt); } catch (error) {
-    console.error("Could not hash QPrint registration password", error);
-    return NextResponse.json({ error: "Could not create the account." }, { status: 500 });
-  }
-
   let connection: Awaited<ReturnType<typeof db.getConnection>>;
   try { connection = await db.getConnection(); } catch (error) {
     console.error("Could not connect to QPrint MySQL", error);
@@ -56,18 +61,48 @@ export async function POST(request: Request) {
   }
 
   let userId: number;
+  let sessionName = ownerName;
   try {
     await connection.beginTransaction();
-    const [userResult] = await connection.execute<import("mysql2").ResultSetHeader>(`INSERT INTO users
-      (full_name, email, password, role, contact_number, is_active)
-      VALUES (?, ?, ?, 'shop_owner', ?, 1)`, [ownerName, email, passwordHash, ownerContact || null]);
-    userId = userResult.insertId;
+    const [existingUsers] = await connection.query<(import("mysql2").RowDataPacket & { id: number; full_name: string; password: string; role: string; is_active: number })[]>(
+      `SELECT id, full_name, password, role, is_active FROM users WHERE email = ? LIMIT 1 FOR UPDATE`, [email]);
+    if (existingUsers[0]) {
+      const existingUser = existingUsers[0];
+      if (existingUser.role !== "shop_owner" || !existingUser.is_active || !(await verifyPassword(password, existingUser.password))) {
+        await connection.rollback();
+        return NextResponse.json({ error: "That email already has an account. Check the account details or sign in." }, { status: 409 });
+      }
+      const [existingShops] = await connection.query<(import("mysql2").RowDataPacket & { id: number })[]>(
+        `SELECT id FROM shops WHERE owner_id = ? LIMIT 1 FOR UPDATE`, [existingUser.id]);
+      if (existingShops[0]) {
+        await connection.rollback();
+        return NextResponse.json({ error: "This account already has a shop. Sign in to manage it." }, { status: 409 });
+      }
+      userId = existingUser.id;
+      sessionName = existingUser.full_name;
+    } else {
+      const salt = randomBytes(16).toString("hex");
+      const passwordHash = await hashPassword(password, salt);
+      const [userResult] = await connection.execute<import("mysql2").ResultSetHeader>(`INSERT INTO users
+        (full_name, email, password, role, contact_number, is_active)
+        VALUES (?, ?, ?, 'shop_owner', ?, 1)`, [ownerName, email, passwordHash, ownerContact || null]);
+      userId = userResult.insertId;
+    }
 
     const [shopResult] = await connection.execute<import("mysql2").ResultSetHeader>(`INSERT INTO shops
       (owner_id, shop_name, description, address, contact_number, email, is_active)
       VALUES (?, ?, ?, ?, ?, ?, 1)`, [userId, shopName, description || null, shopAddress, shopContact || null, shopEmail || null]);
 
     await connection.execute(`INSERT INTO shop_priority_settings (shop_id, is_enabled, priority_fee) VALUES (?, 0, 0.00)`, [shopResult.insertId]);
+    await connection.execute(`INSERT INTO shop_services
+      (shop_id, service_name, category, description, pricing_type, is_available, is_archived)
+      VALUES (?, 'Document Printing', 'printing', 'Basic document printing.', 'per_page', 1, 0)`, [shopResult.insertId]);
+    const [serviceResult] = await connection.query<(import("mysql2").RowDataPacket & { id: number })[]>(`SELECT id FROM shop_services
+      WHERE shop_id = ? AND service_name = 'Document Printing' AND category = 'printing' ORDER BY id DESC LIMIT 1`, [shopResult.insertId]);
+    const serviceId = serviceResult[0]?.id;
+    if (!serviceId) throw new Error("Could not create the default Document Printing service.");
+    await connection.execute(`INSERT INTO shop_service_prices (service_id, color_mode, price, is_available)
+      VALUES (?, 'black_white', 0.00, 0), (?, 'colored', 0.00, 0)`, [serviceId, serviceId]);
     await connection.commit();
   } catch (error) {
     await connection.rollback().catch((rollbackError: unknown) => console.error("Could not roll back QPrint registration", rollbackError));
@@ -84,7 +119,7 @@ export async function POST(request: Request) {
     const session = await getOwnerSession();
     session.userId = userId;
     session.role = "shop_owner";
-    session.fullName = ownerName;
+    session.fullName = sessionName;
     await session.save();
   } catch (error) {
     console.error("Shop was registered but session could not be created", error);

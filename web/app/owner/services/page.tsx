@@ -1,35 +1,42 @@
 import Link from "next/link";
 import { Suspense } from "react";
 import OwnerShell from "@/components/owner-shell";
-import { getOwnerContext, getOwnerServices } from "@/lib/owner-data";
+import { getOwnerContext, getOwnerPriority, getOwnerServices } from "@/lib/owner-data";
+import ServiceCreateForm from "./service-create-form";
+import PrioritySettingsForm from "./priority-settings-form";
 
 function money(amount: string) {
   return new Intl.NumberFormat("en-PH", { style: "currency", currency: "PHP" }).format(Number(amount));
 }
 
-function label(value: string) {
-  return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
 async function ServicesContent() {
   const owner = await getOwnerContext();
-  const services = await getOwnerServices(owner.shopId);
-  const priceCount = services.reduce((sum, service) => sum + service.prices.length, 0);
+  const [services, priority] = await Promise.all([getOwnerServices(owner.shopId), getOwnerPriority(owner.shopId)]);
+  const service = services[0];
+  const prices = new Map((service?.prices ?? []).map((price) => [price.color_mode, price]));
+  const initialPrices = {
+    black_white: prices.get("black_white")?.price ?? "0.00",
+    colored: prices.get("colored")?.price ?? "0.00",
+  };
 
   return <OwnerShell ownerName={owner.fullName} shopName={owner.shopName} active="services">
     <div className="owner-page-content">
-      <div className="owner-page-heading"><div><div className="owner-date-line">SHOP CATALOG</div><h1>Services &amp; pricing</h1><p>See the services and current prices customers can order from {owner.shopName}.</p></div><Link href="/owner" className="owner-secondary-link">← Back to dashboard</Link></div>
-      <div className="catalog-summary"><div className="catalog-summary-icon">☷</div><div><strong>{services.length} {services.length === 1 ? "service" : "services"}</strong><span>{priceCount} price {priceCount === 1 ? "option" : "options"} · Changes here apply to new orders</span></div><span className="catalog-shop-label">{owner.shopName}</span></div>
-      {services.length ? <div className="owner-service-list">{services.map((service) => <article className="owner-service-card" key={service.id}>
-        <div className="owner-service-header"><div className="owner-service-icon">{service.category === "printing" ? "▤" : "✳"}</div><div className="owner-service-title"><h2>{service.service_name}</h2><span>{label(service.category)} · {label(service.pricing_type)}</span></div><span className={`owner-availability ${service.is_available ? "available" : "unavailable"}`}><i />{service.is_available ? "Available" : "Unavailable"}</span></div>
-        {service.description && <p className="owner-service-description">{service.description}</p>}
-        {service.prices.length ? <div className="service-price-table"><div className="service-price-heading"><span>OPTION</span><span>PRINT DETAILS</span><span>PRICE</span><span>STATUS</span></div>{service.prices.map((option, index) => <div className="service-price-row" key={`${service.id}-${index}`}><strong>{option.option_name ?? "Standard option"}</strong><span>{[option.paper_size, option.color_mode ? label(option.color_mode) : null, option.duplex === null ? null : option.duplex ? "Double-sided" : "Single-sided"].filter(Boolean).join(" · ") || "Shop configured option"}</span><b>{money(option.price)} <small>{service.pricing_type === "per_page" ? "/ page" : service.pricing_type === "per_sheet" ? "/ sheet" : service.pricing_type === "per_copy" ? "/ copy" : ""}</small></b><span className={`price-availability ${option.is_available ? "" : "off"}`}>{option.is_available ? "Active" : "Paused"}</span></div>)}</div> : <div className="service-no-prices">No price options are currently set for this service.</div>}
-      </article>)}</div> : <section className="owner-no-services"><span>☷</span><h2>No services listed yet</h2><p>When your shop’s services and prices are added to QPrint, they’ll appear here and in the customer order flow.</p><Link href="/owner">Back to dashboard</Link></section>}
-      <p className="catalog-note"><span>i</span> Prices shown come from the shop’s current catalog. Existing orders keep their saved price snapshots.</p>
+      <div className="owner-page-heading"><div><div className="owner-date-line">SHOP CATALOG</div><h1>Printing prices</h1><p>Configure the two prices customers can use at {owner.shopName}.</p></div><Link href="/owner" className="owner-secondary-link">← Back to dashboard</Link></div>
+      <div className="catalog-summary"><div className="catalog-summary-icon">▤</div><div><strong>Document Printing</strong><span>Two color modes · prices are per page</span></div><span className="catalog-shop-label">{owner.shopName}</span></div>
+      <section className="catalog-setup-section"><div className="catalog-setup-heading"><div><span>DEFAULT QPRINT SERVICE</span><h2>Document printing</h2><p>Paper size and orientation are customer selections and do not change these prices.</p></div></div><ServiceCreateForm initialPrices={initialPrices} /></section>
+      <section className="owner-service-list"><article className="owner-service-card">
+        <div className="owner-service-header"><div className="owner-service-icon">▤</div><div className="owner-service-title"><h2>Document Printing</h2><span>Black &amp; white and colored · per page</span></div><span className={`owner-availability ${service?.is_available ? "available" : "unavailable"}`}><i />{service?.is_available ? "Available" : "Unavailable"}</span></div>
+        <div className="service-price-table"><div className="service-price-heading"><span>PRINTING MODE</span><span>DESCRIPTION</span><span>PRICE</span><span>STATUS</span></div>{(["black_white", "colored"] as const).map((mode) => {
+          const price = prices.get(mode);
+          return <div className="service-price-row" key={mode}><strong>{mode === "black_white" ? "Black & white" : "Colored"}</strong><span>All supported paper sizes and orientations</span><b>{money(price?.price ?? "0")} <small>/ page</small></b><span className={`price-availability ${price?.is_available ? "" : "off"}`}>{price?.is_available ? "Active" : "Unconfigured"}</span></div>;
+        })}</div>
+      </article></section>
+      <p className="catalog-note"><span>i</span> Existing orders keep their saved price snapshots. A mode with no configured price cannot be ordered.</p>
+      <section className="priority-settings-section"><div className="catalog-setup-heading"><div><span>QUEUE SETTINGS</span><h2>Priority printing</h2><p>Give customers an optional paid processing choice while keeping standard orders in their normal FIFO queue.</p></div></div><PrioritySettingsForm initialEnabled={priority.enabled} initialFee={priority.fee.toFixed(2)} /></section>
     </div>
   </OwnerShell>;
 }
 
 export default function OwnerServicesPage() {
-  return <Suspense fallback={<div className="owner-loading">Loading shop services…</div>}><ServicesContent /></Suspense>;
+  return <Suspense fallback={<div className="owner-loading">Loading printing prices…</div>}><ServicesContent /></Suspense>;
 }

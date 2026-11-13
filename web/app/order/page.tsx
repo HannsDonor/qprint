@@ -9,11 +9,16 @@ type PriceOption = {
   serviceId: number;
   serviceName: string;
   priceId: number;
-  optionName: string | null;
-  paperSize: string | null;
-  colorMode: "black_white" | "colored" | null;
-  duplex: boolean | null;
+  colorMode: "black_white" | "colored";
   price: number;
+};
+type ShopService = {
+  id: number;
+  name: string;
+  category: string;
+  description: string | null;
+  pricingType: string;
+  options: Array<{ optionName: string | null; colorMode: "black_white" | "colored"; price: number }>;
 };
 type Shop = {
   id: number;
@@ -23,7 +28,9 @@ type Shop = {
   contactNumber: string | null;
   priorityEnabled: boolean;
   priorityFee: number;
+  paperSizes: string[];
   prices: PriceOption[];
+  services: ShopService[];
 };
 type DocumentItem = { file: File; pageCount: number };
 type OrderResult = {
@@ -34,7 +41,7 @@ type OrderResult = {
   expiresAt: string;
   price: { printing: string; priority: string; total: string; currency: string };
   documents: { name: string; pages: number }[];
-  settings: { paperSize: string; colorMode: string; copies: number; pageRange: string | null; orientation: string; duplex: boolean; priority: boolean };
+  settings: { paperSize: string; colorMode: string; copies: number; orientation: string; priority: boolean };
 };
 
 const steps = ["Choose a shop", "Upload files", "Print settings", "Pickup QR"];
@@ -42,20 +49,6 @@ const colorModes = [
   { value: "black_white", label: "Black & white" },
   { value: "colored", label: "Color" },
 ] as const;
-
-function countRange(range: string, pageCount: number) {
-  if (!range.trim()) return pageCount;
-  const pages = new Set<number>();
-  for (const segment of range.split(",")) {
-    const match = /^(\d+)(?:\s*-\s*(\d+))?$/.exec(segment.trim());
-    if (!match) return 0;
-    const start = Number(match[1]);
-    const end = Number(match[2] ?? match[1]);
-    if (start < 1 || end < start || end > pageCount) return 0;
-    for (let page = start; page <= end; page++) pages.add(page);
-  }
-  return pages.size;
-}
 
 function formatPHP(amount: number | string) {
   return new Intl.NumberFormat("en-PH", { style: "currency", currency: "PHP" }).format(Number(amount));
@@ -75,6 +68,7 @@ export default function OrderPage() {
   const [loadingShops, setLoadingShops] = useState(true);
   const [shopsError, setShopsError] = useState("");
   const [selectedShop, setSelectedShop] = useState<number | null>(null);
+  const [detailsShop, setDetailsShop] = useState<Shop | null>(null);
   const [files, setFiles] = useState<DocumentItem[]>([]);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
@@ -82,23 +76,28 @@ export default function OrderPage() {
   const [color, setColor] = useState<"black_white" | "colored">("black_white");
   const [copies, setCopies] = useState(1);
   const [orientation, setOrientation] = useState("portrait");
-  const [duplex, setDuplex] = useState(false);
   const [priority, setPriority] = useState(false);
-  const [pageRange, setPageRange] = useState("");
   const [orderResult, setOrderResult] = useState<OrderResult | null>(null);
+  const [secondsLeft, setSecondsLeft] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isReading, setIsReading] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const shop = shops.find((item) => item.id === selectedShop);
   const visibleShops = useMemo(() => shops.filter((item) => `${item.name} ${item.address}`.toLowerCase().includes(query.toLowerCase())), [shops, query]);
-  const paperOptions = useMemo(() => [...new Set(shop?.prices.map((price) => price.paperSize).filter((value): value is string => Boolean(value)) ?? [])], [shop]);
-  const availableColors = useMemo(() => colorModes.filter((mode) => shop?.prices.some((price) => price.paperSize === paper && price.colorMode === mode.value)), [shop, paper]);
-  const priceOption = shop?.prices.find((price) => price.paperSize === paper && price.colorMode === color && price.duplex === duplex)
-    ?? shop?.prices.find((price) => price.paperSize === paper && price.colorMode === color && price.duplex === null);
-  const duplexSupported = Boolean(shop?.prices.some((price) => price.paperSize === paper && price.colorMode === color && price.duplex === true));
-  const selectedPageCount = files.reduce((sum, document) => sum + countRange(pageRange, document.pageCount), 0);
+  const paperOptions = shop?.paperSizes ?? ["A4", "A3", "A5", "A2", "A1", "A0", "Short", "Long", "Letter", "Legal"];
+  const priceOption = shop?.prices.find((price) => price.colorMode === color);
+  const selectedPageCount = files.reduce((sum, document) => sum + document.pageCount, 0);
   const estimatedPrintTotal = priceOption ? selectedPageCount * copies * priceOption.price : null;
   const estimatedTotal = estimatedPrintTotal === null ? null : estimatedPrintTotal + (priority && shop ? shop.priorityFee : 0);
+
+  useEffect(() => {
+    if (!orderResult) {
+      return;
+    }
+    const update = () => setSecondsLeft(Math.max(0, Math.ceil((new Date(orderResult.expiresAt).getTime() - Date.now()) / 1000)));
+    const timer = window.setInterval(update, 1000);
+    return () => window.clearInterval(timer);
+  }, [orderResult]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -116,6 +115,20 @@ export default function OrderPage() {
       .finally(() => setLoadingShops(false));
     return () => controller.abort();
   }, []);
+
+  useEffect(() => {
+    if (!detailsShop) return;
+    const previousOverflow = document.body.style.overflow;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setDetailsShop(null);
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [detailsShop]);
 
   async function addFiles(incoming: FileList | null) {
     if (!incoming) return;
@@ -159,8 +172,8 @@ export default function OrderPage() {
     setError("");
     if (step === 0 && !selectedShop) return setError("Choose a print shop to continue.");
     if (step === 1 && files.length === 0) return setError("Upload at least one PDF to continue.");
-    if (step === 2 && !priceOption) return setError("This shop does not offer that print combination. Choose a supported option.");
-    if (step === 2 && pageRange && files.some((document) => countRange(pageRange, document.pageCount) === 0)) return setError("Enter a valid page range for every document.");
+    if (step === 2 && (!priceOption || priceOption.price <= 0)) return setError("This shop has not configured a price for that printing mode.");
+    if (step === 2 && (!Number.isInteger(copies) || copies < 1 || copies > 999)) return setError("Copies must be a whole number between 1 and 999.");
     setStep(next);
   }
 
@@ -175,8 +188,6 @@ export default function OrderPage() {
       form.set("colorMode", color);
       form.set("copies", String(copies));
       form.set("orientation", orientation);
-      form.set("pageRange", pageRange);
-      form.set("duplex", String(duplex));
       form.set("priority", String(priority));
       form.set("quotedTotalCents", String(Math.round((estimatedTotal ?? 0) * 100)));
       for (const document of files) form.append("documents", document.file, document.file.name);
@@ -221,9 +232,7 @@ export default function OrderPage() {
     setColor("black_white");
     setCopies(1);
     setOrientation("portrait");
-    setDuplex(false);
     setPriority(false);
-    setPageRange("");
     setOrderResult(null);
     setError("");
   }
@@ -258,10 +267,26 @@ export default function OrderPage() {
               {!loadingShops && !shopsError && visibleShops.length === 0 && <div className="shop-list-message">{shops.length ? "No shops match that search." : "No active shops with printing prices are available yet."}</div>}
               <div className="shop-list">{visibleShops.map((item) => {
                 const startingPrice = Math.min(...item.prices.map((price) => price.price));
-                return <button key={item.id} type="button" className={`shop-option ${selectedShop === item.id ? "selected" : ""}`} onClick={() => { setSelectedShop(item.id); const first = item.prices[0]; if (!item.prices.some((price) => price.paperSize === paper && price.colorMode === color && price.duplex === duplex)) { setPaper(first.paperSize ?? "A4"); setColor(first.colorMode ?? "black_white"); setDuplex(first.duplex ?? false); } if (!item.priorityEnabled) setPriority(false); setError(""); }}>
-                  <span className={`shop-avatar ${shopTone(item.id)}`}>{shopInitials(item.name)}</span><span className="shop-info"><span className="shop-name-row"><strong>{item.name}</strong>{item.priorityEnabled && <span className="shop-priority-label">Priority available</span>}</span><span className="shop-address">{item.address}</span><span className="shop-meta">From {formatPHP(startingPrice)} / page{item.priorityEnabled ? ` · Priority ${formatPHP(item.priorityFee)}` : ""}</span></span><span className="shop-choice"><span /></span>
+                return <button key={item.id} type="button" className={`shop-option ${selectedShop === item.id ? "selected" : ""}`} onClick={() => setDetailsShop(item)} aria-haspopup="dialog" aria-label={`Open ${item.name} services and details`}>
+                  <span className={`shop-avatar ${shopTone(item.id)}`}>{shopInitials(item.name)}</span><span className="shop-info"><span className="shop-name-row"><strong>{item.name}</strong>{item.priorityEnabled && <span className="shop-priority-label">Priority available</span>}</span><span className="shop-address">{item.address}</span><span className="shop-meta">From {formatPHP(startingPrice)} / page · {item.services.length} {item.services.length === 1 ? "service" : "services"}</span><span className="shop-view-link">Click to see services and pricing</span></span><span className="shop-choice"><span /></span>
                 </button>;
               })}</div>
+              {detailsShop && <div className="shop-detail-backdrop" onClick={() => setDetailsShop(null)}>
+                <section className="shop-detail-dialog" role="dialog" aria-modal="true" aria-labelledby="shop-detail-title" onClick={(event) => event.stopPropagation()}>
+                  <button type="button" className="shop-detail-close" onClick={() => setDetailsShop(null)} aria-label="Close shop details">×</button>
+                  <div className="shop-detail-identity"><span className={`shop-avatar ${shopTone(detailsShop.id)}`}>{shopInitials(detailsShop.name)}</span><div><span className="step-overline">SHOP DETAILS</span><h2 id="shop-detail-title">{detailsShop.name}</h2></div></div>
+                  <p className="shop-detail-address">{detailsShop.address}</p>
+                  {detailsShop.contactNumber && <p className="shop-detail-contact">{detailsShop.contactNumber}</p>}
+                  {detailsShop.description && <p className="shop-detail-description">{detailsShop.description}</p>}
+                  <div className="shop-detail-services-heading"><h3>Services offered</h3><span>{detailsShop.services.length}</span></div>
+                  <div className="shop-detail-services">{detailsShop.services.map((service) => <article className="shop-detail-service" key={service.id}>
+                    <div className="shop-detail-service-title"><strong>{service.name}</strong><span>{service.category.replaceAll("_", " ")} · {service.pricingType.replaceAll("_", " ")}</span></div>
+                    {service.description && <p>{service.description}</p>}
+                    <div className="shop-detail-price-list">{service.options.map((option, index) => <div className="shop-detail-price" key={`${service.id}-${index}`}><span>{option.colorMode === "black_white" ? "Black & white" : "Colored"}</span><strong>{formatPHP(option.price)} / page</strong></div>)}</div>
+                  </article>)}</div>
+                  <button type="button" className="shop-detail-select" onClick={() => { setSelectedShop(detailsShop.id); if (!detailsShop.prices.some((price) => price.colorMode === color)) setColor("black_white"); if (!detailsShop.priorityEnabled) setPriority(false); setError(""); setDetailsShop(null); }}>Choose this shop <span>→</span></button>
+                </section>
+              </div>}
               {error && <p className="inline-error" role="alert">{error}</p>}
               <div className="selected-shop-note"><span>✓</span> {shop ? <>Selected: <strong>{shop.name}</strong></> : "Choose a shop to see its supported options"}</div>
             </>}
@@ -278,31 +303,30 @@ export default function OrderPage() {
 
             {step === 2 && <>
               <div className="card-heading"><div><span className="step-overline">STEP 03 · PRINT PREFERENCES</span><h2>Set up your print</h2><p>Only settings with prices at {shop?.name} are selectable.</p></div><span className="card-heading-icon">☷</span></div>
-              <div className="settings-group"><label className="field-label">PAPER SIZE</label><div className="choice-row">{paperOptions.map((item) => <button type="button" key={item} className={`choice-chip ${paper === item ? "chosen" : ""}`} onClick={() => { setPaper(item); const nextColor = colorModes.find((mode) => shop?.prices.some((price) => price.paperSize === item && price.colorMode === mode.value)); if (nextColor) setColor(nextColor.value); setDuplex(false); }}>{item}</button>)}</div></div>
-              <div className="settings-grid"><div className="settings-group"><label className="field-label" htmlFor="color-mode">COLOR MODE</label><select id="color-mode" value={color} onChange={(event) => { const value = event.target.value as "black_white" | "colored"; setColor(value); if (!shop?.prices.some((price) => price.paperSize === paper && price.colorMode === value && price.duplex === true)) setDuplex(false); }}>{availableColors.map((mode) => <option key={mode.value} value={mode.value}>{mode.label}</option>)}</select></div><div className="settings-group"><label className="field-label" htmlFor="orientation">ORIENTATION</label><select id="orientation" value={orientation} onChange={(event) => setOrientation(event.target.value)}><option value="portrait">Portrait</option><option value="landscape">Landscape</option></select></div><div className="settings-group"><label className="field-label" htmlFor="copies">COPIES</label><div className="copies-control"><button type="button" onClick={() => setCopies((value) => Math.max(1, value - 1))} aria-label="Remove a copy">−</button><input id="copies" type="number" min="1" max="99" value={copies} onChange={(event) => setCopies(Math.min(99, Math.max(1, Number(event.target.value) || 1)))} /><button type="button" onClick={() => setCopies((value) => Math.min(99, value + 1))} aria-label="Add a copy">+</button></div></div><div className="settings-group"><label className="field-label" htmlFor="page-range">PAGE RANGE <span>OPTIONAL</span></label><input id="page-range" value={pageRange} onChange={(event) => setPageRange(event.target.value)} placeholder="e.g. 1-4, 7" /></div></div>
-              <button type="button" className={`toggle-setting ${duplex ? "toggle-on" : ""}`} disabled={!duplexSupported} onClick={() => setDuplex((value) => !value)} aria-pressed={duplex}><span className="toggle-copy"><strong>Print on both sides</strong><small>{duplexSupported ? "Double-sided printing · shop price applies" : "Not offered by this shop for the selected paper and color"}</small></span><span className="switch"><i /></span></button>
-              {shop?.priorityEnabled && <button type="button" className={`priority-setting ${priority ? "priority-on" : ""}`} onClick={() => setPriority((value) => !value)} aria-pressed={priority}><span className="priority-icon">✳</span><span className="toggle-copy"><strong>Priority printing <span className="optional-tag">{formatPHP(shop.priorityFee)} ADD-ON</span></strong><small>Move your order ahead of standard jobs in the queue.</small></span><span className="switch"><i /></span></button>}
+              <div className="settings-group"><label className="field-label" htmlFor="paper-size">PAPER SIZE</label><select id="paper-size" value={paper} onChange={(event) => setPaper(event.target.value)}>{paperOptions.map((item) => <option key={item} value={item}>{item}</option>)}</select></div>
+              <div className="settings-grid"><div className="settings-group"><label className="field-label">COLOR MODE</label><div className="choice-row">{colorModes.map((mode) => <button type="button" key={mode.value} className={`choice-chip ${color === mode.value ? "chosen" : ""}`} onClick={() => setColor(mode.value)}>{mode.label} · {formatPHP(shop?.prices.find((price) => price.colorMode === mode.value)?.price ?? 0)}/page</button>)}</div></div><div className="settings-group"><label className="field-label" htmlFor="orientation">ORIENTATION</label><select id="orientation" value={orientation} onChange={(event) => setOrientation(event.target.value)}><option value="portrait">Portrait</option><option value="landscape">Landscape</option></select></div><div className="settings-group"><label className="field-label" htmlFor="copies">COPIES</label><input id="copies" type="number" min="1" max="999" step="1" value={copies} onChange={(event) => setCopies(Number(event.target.value))} /></div></div>
+              <div className="processing-choice-group"><span className="field-label">PROCESSING</span><button type="button" className={`processing-choice ${!priority ? "chosen" : ""}`} onClick={() => setPriority(false)}><span><strong>Standard Processing</strong><small>Free · first come, first served</small></span><b>Free</b></button>{shop?.priorityEnabled && <button type="button" className={`processing-choice ${priority ? "chosen" : ""}`} onClick={() => setPriority(true)}><span><strong>Priority Processing</strong><small>Processed ahead of standard waiting orders; no exact completion time is guaranteed.</small></span><b>+{formatPHP(shop.priorityFee)}</b></button>}</div>
               {error && <p className="inline-error" role="alert">{error}</p>}
-              <div className="settings-note"><span>i</span> Price is calculated from the shop’s current per-page price and the page count of your selected documents.</div>
+              <div className="settings-note"><span>i</span> All {selectedPageCount} pages · price uses the selected color mode and copies. Paper size and orientation do not add charges.</div>
             </>}
 
             {step === 3 && !orderResult && <>
               <div className="card-heading"><div><span className="step-overline">STEP 04 · REVIEW</span><h2>Review your print order</h2><p>Check the shop, files, settings, and total before creating the job.</p></div><span className="card-heading-icon">▦</span></div>
               <div className="review-shop"><span className={`shop-avatar ${shop ? shopTone(shop.id) : "sage"}`}>{shop ? shopInitials(shop.name) : "QP"}</span><span><strong>{shop?.name}</strong><small>{shop?.address}</small></span><button type="button" onClick={() => setStep(0)}>Change</button></div>
-              <div className="review-files">{files.map((item) => <div className="review-file" key={`${item.file.name}-${item.file.size}`}><span>{item.file.name}</span><strong>{countRange(pageRange, item.pageCount)} pages</strong></div>)}</div>
-              <div className="order-summary"><div><span>Print settings</span><strong>{paper} · {color === "black_white" ? "Black & white" : "Color"} · {copies} {copies === 1 ? "copy" : "copies"}</strong></div><div><span>Finishing</span><strong>{orientation === "portrait" ? "Portrait" : "Landscape"}{duplex ? " · Double-sided" : " · Single-sided"}</strong></div>{priority && <div><span>Priority printing</span><strong>{formatPHP(shop?.priorityFee ?? 0)}</strong></div>}<div><span>Printing ({selectedPageCount * copies} pages)</span><strong>{estimatedPrintTotal === null ? "Unavailable" : formatPHP(estimatedPrintTotal)}</strong></div><div className="order-total"><span>Total due at shop</span><strong>{estimatedTotal === null ? "Unavailable" : formatPHP(estimatedTotal)}</strong></div></div>
+              <div className="review-files">{files.map((item) => <div className="review-file" key={`${item.file.name}-${item.file.size}`}><span>{item.file.name}</span><strong>All {item.pageCount} pages</strong></div>)}</div>
+              <div className="order-summary"><div><span>Print settings</span><strong>{paper} · {color === "black_white" ? "Black & white" : "Color"} · {orientation} · {copies} {copies === 1 ? "copy" : "copies"}</strong></div>{priority && <div><span>Priority printing</span><strong>{formatPHP(shop?.priorityFee ?? 0)}</strong></div>}<div><span>Printing ({selectedPageCount * copies} pages)</span><strong>{estimatedPrintTotal === null ? "Unavailable" : formatPHP(estimatedPrintTotal)}</strong></div><div className="order-total"><span>Total due at shop</span><strong>{estimatedTotal === null ? "Unavailable" : formatPHP(estimatedTotal)}</strong></div></div>
               <p className="payment-reminder">Payment is made at the selected shop. Creating this order reserves a QR pickup reference and starts it as awaiting payment.</p>
             </>}
 
             {step === 3 && orderResult && <>
               <div className="card-heading"><div><span className="step-overline">ORDER CREATED · AWAITING PAYMENT</span><h2>Your pickup QR code</h2><p>Present this code at the selected shop and pay there.</p></div><span className="card-heading-icon">▦</span></div>
-              <div className="qr-preview-card"><div className="qr-preview-top"><span className="status-pending"><i /> Awaiting payment</span><span className="demo-tag">{orderResult.jobCode}</span></div><div className="qr-code-frame"><QRCodeSVG id="pickup-qr" value={orderResult.qrToken} size={184} level="H" includeMargin fgColor="#1c4934" bgColor="#ffffff" /></div><strong className="qr-reference">{orderResult.jobCode}</strong><span className="qr-reference-hint">Keep this QR code available for the shop to scan.</span><div className="qr-shop-summary"><span className={`shop-avatar ${shop ? shopTone(shop.id) : "sage"}`}>{shop ? shopInitials(shop.name) : "QP"}</span><span><strong>{orderResult.shopName}</strong><small>{shop?.address}</small></span></div><button type="button" className="qr-download" onClick={downloadQRCode}>Download QR code</button></div>
-              <div className="order-summary"><div><span>Printing</span><strong>{formatPHP(orderResult.price.printing)}</strong></div>{Number(orderResult.price.priority) > 0 && <div><span>Priority fee</span><strong>{formatPHP(orderResult.price.priority)}</strong></div>}<div className="order-total"><span>Total due at shop</span><strong>{formatPHP(orderResult.price.total)}</strong></div><div><span>Expires</span><strong>{new Date(orderResult.expiresAt).toLocaleDateString()}</strong></div></div>
+              <div className="qr-preview-card"><div className="qr-preview-top"><span className="status-pending"><i /> Awaiting payment</span><span className="demo-tag">{orderResult.jobCode}</span></div><div className="qr-code-frame"><QRCodeSVG id="pickup-qr" value={JSON.stringify({ jobCode: orderResult.jobCode, qrToken: orderResult.qrToken })} size={184} level="H" includeMargin fgColor="#1c4934" bgColor="#ffffff" /></div><strong className="qr-reference">{orderResult.jobCode}</strong><span className="qr-reference-hint">Keep this QR code available for the shop to scan.</span><div className={`document-countdown ${secondsLeft < 300 ? "urgent" : ""}`}><span>Files and QR expire in</span><strong>{Math.floor(secondsLeft / 60).toString().padStart(2, "0")}:{(secondsLeft % 60).toString().padStart(2, "0")}</strong></div><div className="qr-shop-summary"><span className={`shop-avatar ${shop ? shopTone(shop.id) : "sage"}`}>{shop ? shopInitials(shop.name) : "QP"}</span><span><strong>{orderResult.shopName}</strong><small>{shop?.address}</small></span></div><button type="button" className="qr-download" onClick={downloadQRCode}>Download QR code</button></div>
+              <div className="order-summary"><div><span>Processing</span><strong>{orderResult.settings.priority ? "Priority Processing" : "Standard Processing"}</strong></div><div><span>Printing</span><strong>{formatPHP(orderResult.price.printing)}</strong></div>{Number(orderResult.price.priority) > 0 && <div><span>Priority fee</span><strong>{formatPHP(orderResult.price.priority)}</strong></div>}<div className="order-total"><span>Total due at shop</span><strong>{formatPHP(orderResult.price.total)}</strong></div><div><span>Expires</span><strong>{new Date(orderResult.expiresAt).toLocaleDateString()}</strong></div></div>
               <p className="payment-reminder">Your order is saved as awaiting payment. The shop confirms payment before it enters the print queue.</p>
             </>}
 
             {error && <p className="inline-error" role="alert">{error}</p>}
-            <div className="wizard-actions">{step > 0 && !orderResult && <button type="button" className="back-button" onClick={() => { setError(""); setStep((value) => value - 1); }}>← <span>Back</span></button>}{step === 0 && <span className="wizard-help">Browse shops without an account</span>}{step < 2 && <button type="button" disabled={loadingShops || isReading} className="continue-button" onClick={() => continueTo(step + 1)}>Continue <span>→</span></button>}{step === 2 && <button type="button" className="continue-button" onClick={() => continueTo(3)}>Review order <span>→</span></button>}{step === 3 && !orderResult && <button type="button" disabled={isSubmitting || !priceOption || selectedPageCount < 1} className="continue-button" onClick={createOrder}>{isSubmitting ? "Creating order…" : "Place order & generate QR"}<span>→</span></button>}{step === 3 && orderResult && <button type="button" className="continue-button" onClick={startOver}>Start another order <span>↻</span></button>}</div>
+            <div className="wizard-actions">{step > 0 && !orderResult && <button type="button" className="back-button" onClick={() => { setError(""); setStep((value) => value - 1); }}>← <span>Back</span></button>}{step === 0 && <span className="wizard-help">Browse shops without an account</span>}{step < 2 && <button type="button" disabled={loadingShops || isReading} className="continue-button" onClick={() => continueTo(step + 1)}>Continue <span>→</span></button>}{step === 2 && <button type="button" className="continue-button" onClick={() => continueTo(3)}>Review order <span>→</span></button>}                        {step === 3 && !orderResult && <button type="button" disabled={isSubmitting || !priceOption || priceOption.price <= 0 || estimatedTotal === null || selectedPageCount < 1 || !Number.isInteger(copies) || copies < 1} className="continue-button" onClick={createOrder}>{isSubmitting ? "Creating order…" : "Place order & generate QR"}<span>→</span></button>}{step === 3 && orderResult && <button type="button" className="continue-button" onClick={startOver}>Start another order <span>↻</span></button>}</div>
           </section>
 
           <aside className="order-sidebar"><div className="sidebar-shop-card"><span className="sidebar-overline">YOUR SELECTED SHOP</span>{shop ? <><div className={`sidebar-shop-mark ${shopTone(shop.id)}`}>{shopInitials(shop.name)}</div><strong>{shop.name}</strong><span className="sidebar-location">{shop.address}</span><div className="sidebar-shop-divider" /><div className="sidebar-detail"><span>Starting price</span><b>{formatPHP(Math.min(...shop.prices.map((price) => price.price)))} / page</b></div><div className="sidebar-detail"><span>Available paper</span><b>{paperOptions.join(", ")}</b></div><div className="sidebar-detail"><span>Priority printing</span><b>{shop.priorityEnabled ? formatPHP(shop.priorityFee) : "Unavailable"}</b></div>{step < 2 && <button className="change-shop" type="button" onClick={() => setStep(0)}>Change shop <span>↗</span></button>}</> : <div className="sidebar-empty"><span>⌖</span><strong>Choose your shop first</strong><small>Your shop details and options will appear here.</small></div>}</div><div className="sidebar-help"><span className="help-icon">?</span><div><strong>Need a hand?</strong><p>Pick your shop first. You can go back and change your choices anytime.</p></div></div><div className="demo-disclaimer">ORDER STATUS <span>Payment is made in person at the selected print shop.</span></div></aside>

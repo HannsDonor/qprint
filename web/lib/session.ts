@@ -8,6 +8,8 @@ export type OwnerSession = {
   fullName?: string;
 };
 
+const OWNER_SESSION_TTL_SECONDS = 5 * 60 * 60;
+
 function options(): SessionOptions {
   const password = process.env.SESSION_PASSWORD;
   if (!password || password.length < 32) {
@@ -17,13 +19,13 @@ function options(): SessionOptions {
   return {
     cookieName: "qprint_owner_session",
     password,
-    ttl: 8 * 60 * 60,
+    ttl: OWNER_SESSION_TTL_SECONDS,
     cookieOptions: {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
       path: "/",
-      maxAge: 8 * 60 * 60,
+      maxAge: OWNER_SESSION_TTL_SECONDS,
     },
   };
 }
