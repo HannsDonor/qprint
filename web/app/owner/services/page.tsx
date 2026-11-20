@@ -19,7 +19,7 @@ async function ServicesContent() {
     colored: prices.get("colored")?.price ?? "0.00",
   };
 
-  return <OwnerShell ownerName={owner.fullName} shopName={owner.shopName} active="services">
+  return <OwnerShell ownerName={owner.fullName} shopName={owner.shopName} shopActive={owner.shopActive} active="services">
     <div className="owner-page-content">
       <div className="owner-page-heading"><div><div className="owner-date-line">SHOP CATALOG</div><h1>Printing prices</h1><p>Configure the two prices customers can use at {owner.shopName}.</p></div><Link href="/owner" className="owner-secondary-link">← Back to dashboard</Link></div>
       <div className="catalog-summary"><div className="catalog-summary-icon">▤</div><div><strong>Document Printing</strong><span>Two color modes · prices are per page</span></div><span className="catalog-shop-label">{owner.shopName}</span></div>

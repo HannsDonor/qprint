@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { PDFDocument } from "pdf-lib";
+import JSZip from "jszip";
 import { NextResponse } from "next/server";
 import type { RowDataPacket } from "mysql2";
 import { db } from "@/lib/db";
@@ -11,10 +12,40 @@ const MAX_FILE_SIZE = 20 * 1024 * 1024;
 const MAX_ORDER_SIZE = 50 * 1024 * 1024;
 const MAX_FILES = 5;
 const MAX_PAGES_PER_FILE = 10_000;
+const allowedExtensions = new Set([".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".webm"]);
 const allowedPapers = new Set(["A4", "A3", "A5", "A2", "A1", "A0", "Short", "Long", "Letter", "Legal"]);
 const allowedColors = new Set(["black_white", "colored"]);
 
-type UploadedDocument = { file: File; bytes: Buffer; pageCount: number; storedName: string; path: string };
+type PageRange = { start: number; end: number };
+type UploadedDocument = { file: File; bytes: Buffer; pageCount: number; selectedPages: number; pageRanges: PageRange[]; storedName: string; path: string };
+
+function parsePageRanges(value: unknown): PageRange[] {
+  if (!Array.isArray(value) || value.length === 0) return [{ start: 1, end: 1 }];
+  const ranges = value.map((range) => {
+    if (!range || typeof range !== "object") throw new Error("Page ranges are invalid.");
+    const start = Number((range as { start?: unknown }).start);
+    const end = Number((range as { end?: unknown }).end);
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < start) throw new Error("Page ranges must use positive whole numbers.");
+    return { start, end };
+  });
+  for (let index = 1; index < ranges.length; index += 1) {
+    if (ranges[index].start <= ranges[index - 1].end) throw new Error("Page ranges must be ordered and must not overlap.");
+  }
+  return ranges;
+}
+
+function selectedPageTotal(ranges: PageRange[], pageCount: number) {
+  if (ranges.some((range) => range.end > pageCount)) throw new Error(`A selected page is outside the available 1-${pageCount} page range.`);
+  return ranges.reduce((total, range) => total + range.end - range.start + 1, 0);
+}
+
+async function detectDocxPageCount(bytes: Buffer) {
+  const zip = await JSZip.loadAsync(bytes);
+  const documentXml = await zip.file("word/document.xml")?.async("string");
+  if (!documentXml) return 1;
+  const pageBreaks = (documentXml.match(/lastRenderedPageBreak|w:type="page"/g) ?? []).length;
+  return Math.max(1, pageBreaks + 1);
+}
 
 function mysqlBoolean(value: unknown) {
   if (value === true || value === 1 || value === "1") return true;
@@ -57,13 +88,22 @@ export async function POST(request: Request) {
   const priority = formData.get("priority") === "true";
   const quotedTotalCents = Number(formData.get("quotedTotalCents"));
   const files = formData.getAll("documents").filter((item): item is File => item instanceof File);
+  let pageRangesByFile: unknown[] = [];
+  try {
+    const rawPageRanges = String(formData.get("pageRanges") ?? "[]");
+    const parsed = JSON.parse(rawPageRanges);
+    if (!Array.isArray(parsed)) throw new Error("Page ranges are invalid.");
+    pageRangesByFile = parsed;
+  } catch {
+    return NextResponse.json({ error: "Page ranges are invalid." }, { status: 400 });
+  }
 
   if (!Number.isSafeInteger(shopId) || shopId < 1) return NextResponse.json({ error: "Choose a valid print shop." }, { status: 400 });
   if (!allowedPapers.has(paperSize) || !allowedColors.has(colorMode)) return NextResponse.json({ error: "Choose valid print settings." }, { status: 400 });
   if (!Number.isInteger(copies) || copies < 1 || copies > 999) return NextResponse.json({ error: "Copies must be a whole number between 1 and 999." }, { status: 400 });
   if (!Number.isSafeInteger(quotedTotalCents) || quotedTotalCents < 0) return NextResponse.json({ error: "Review the order total before submitting." }, { status: 400 });
   if (orientation !== "portrait" && orientation !== "landscape") return NextResponse.json({ error: "Choose a valid page orientation." }, { status: 400 });
-  if (files.length < 1 || files.length > MAX_FILES) return NextResponse.json({ error: `Upload between 1 and ${MAX_FILES} PDF files.` }, { status: 400 });
+  if (files.length < 1 || files.length > MAX_FILES) return NextResponse.json({ error: `Upload between 1 and ${MAX_FILES} supported files.` }, { status: 400 });
 
   const documents: UploadedDocument[] = [];
   let totalBytes = 0;
@@ -71,17 +111,21 @@ export async function POST(request: Request) {
   await mkdir(storageDirectory, { recursive: true, mode: 0o700 });
 
   try {
-    for (const file of files) {
-      if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) throw new Error(`${file.name} is not a PDF file.`);
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
+      const extension = path.extname(file.name).toLowerCase();
+      if (!allowedExtensions.has(extension)) throw new Error(`${file.name} is not a supported file type.`);
       if (file.size < 1 || file.size > MAX_FILE_SIZE) throw new Error(`${file.name} must be smaller than 20 MB.`);
       totalBytes += file.size;
       if (totalBytes > MAX_ORDER_SIZE) throw new Error("The total upload limit is 50 MB.");
 
       const bytes = Buffer.from(await file.arrayBuffer());
-      const pdf = await PDFDocument.load(bytes, { updateMetadata: false });
-      const pageCount = pdf.getPageCount();
+      const pdf = extension === ".pdf" ? await PDFDocument.load(bytes, { updateMetadata: false }) : null;
+      const pageCount = pdf?.getPageCount() ?? (extension === ".docx" ? await detectDocxPageCount(bytes) : 1);
       if (pageCount < 1 || pageCount > MAX_PAGES_PER_FILE) throw new Error(`${file.name} must contain between 1 and ${MAX_PAGES_PER_FILE} pages.`);
-      documents.push({ file, bytes, pageCount, storedName: `${randomBytes(24).toString("hex")}.pdf`, path: "" });
+      const pageRanges = parsePageRanges(pageRangesByFile[index]);
+      const selectedPages = selectedPageTotal(pageRanges, pageCount);
+      documents.push({ file, bytes, pageCount, selectedPages, pageRanges, storedName: `${randomBytes(24).toString("hex")}${extension}`, path: "" });
     }
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "A PDF could not be processed." }, { status: 400 });
@@ -130,7 +174,7 @@ export async function POST(request: Request) {
     const priceOption = priceRows[0];
     if (!priceOption) throw new Error("That print option is no longer available at the selected shop. Go back and choose another option.");
 
-    const selectedPages = documents.reduce((sum, document) => sum + document.pageCount, 0);
+    const selectedPages = documents.reduce((sum, document) => sum + document.selectedPages, 0);
     const quantity = selectedPages * copies;
     const unitPriceCents = Math.round(Number(priceOption.price) * 100);
     const printTotalCents = quantity * unitPriceCents;
@@ -156,15 +200,15 @@ export async function POST(request: Request) {
       document.path = path.relative(process.cwd(), absolutePath).split(path.sep).join("/");
       const originalFilename = document.file.name.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 255) || "document.pdf";
       await connection.execute(`INSERT INTO documents
-        (job_id, original_filename, stored_filename, file_path, file_size, mime_type, page_count, expires_at)
-        VALUES (?, ?, ?, ?, ?, 'application/pdf', ?, ?)`, [jobId, originalFilename, document.storedName, document.path, document.file.size, document.pageCount, expiresAt]);
+        (job_id, original_filename, stored_filename, file_path, file_size, mime_type, page_count, page_ranges, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [jobId, originalFilename, document.storedName, document.path, document.file.size, document.file.type || "application/octet-stream", document.pageCount, JSON.stringify(document.pageRanges), expiresAt]);
     }
 
     await connection.execute(`INSERT INTO print_settings (job_id, paper_size, color_mode, copies, orientation)
       VALUES (?, ?, ?, ?, ?)`, [jobId, paperSize, colorMode, copies, orientation]);
 
     for (const document of documents) {
-      const documentQuantity = document.pageCount * copies;
+      const documentQuantity = document.selectedPages * copies;
       await connection.execute(`INSERT INTO print_job_items
         (job_id, service_id, service_price_id, service_name, option_name, quantity, unit_price, subtotal)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [jobId, priceOption.service_id, priceOption.price_id, priceOption.service_name, colorMode === "black_white" ? "Black & White" : "Colored", documentQuantity, money(unitPriceCents), money(documentQuantity * unitPriceCents)]);
@@ -183,7 +227,7 @@ export async function POST(request: Request) {
       status: "awaiting_payment",
       expiresAt: expiresAt.toISOString(),
       price: { printing: money(printTotalCents), priority: money(priorityFeeCents), total: money(totalCents), currency: "PHP" },
-      documents: documents.map((document) => ({ name: document.file.name, pages: document.pageCount })),
+      documents: documents.map((document) => ({ name: document.file.name, pages: document.selectedPages })),
       settings: { paperSize, colorMode, copies, orientation, priority },
     }, { status: 201 });
   } catch (error) {

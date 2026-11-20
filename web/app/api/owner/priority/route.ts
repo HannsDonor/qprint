@@ -17,7 +17,7 @@ function parseFee(value: unknown) {
 
 async function getOwnerShop(ownerId: number) {
   const [rows] = await db.query<(RowDataPacket & { id: number })[]>(`SELECT s.id FROM shops s
-    WHERE s.owner_id = ? AND s.is_active = 1 ORDER BY s.id LIMIT 1`, [ownerId]);
+    WHERE s.owner_id = ? ORDER BY s.id LIMIT 1`, [ownerId]);
   return rows[0];
 }
 
@@ -53,7 +53,7 @@ export async function POST(request: Request) {
   try {
     await connection.beginTransaction();
     const [shops] = await connection.query<(RowDataPacket & { id: number })[]>(`SELECT id FROM shops
-      WHERE owner_id = ? AND is_active = 1 ORDER BY id LIMIT 1 FOR UPDATE`, [session.userId]);
+      WHERE owner_id = ? ORDER BY id LIMIT 1 FOR UPDATE`, [session.userId]);
     const shop = shops[0];
     if (!shop) {
       await connection.rollback();

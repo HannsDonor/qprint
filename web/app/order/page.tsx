@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { PDFDocument } from "pdf-lib";
+import * as mammoth from "mammoth";
+import JSZip from "jszip";
 
 type PriceOption = {
   serviceId: number;
@@ -32,7 +34,8 @@ type Shop = {
   prices: PriceOption[];
   services: ShopService[];
 };
-type DocumentItem = { file: File; pageCount: number };
+type PageRange = { start: number; end: number };
+type DocumentItem = { file: File; pageCount: number; pageRanges: PageRange[]; previewUrl: string; previewHtml?: string };
 type OrderResult = {
   jobCode: string;
   qrToken: string;
@@ -49,6 +52,28 @@ const colorModes = [
   { value: "black_white", label: "Black & white" },
   { value: "colored", label: "Color" },
 ] as const;
+const acceptedFileTypes = ".pdf,.doc,.docx,.jpg,.jpeg,.png,.webm";
+
+function extensionOf(name: string) {
+  return name.slice(name.lastIndexOf(".")).toLowerCase();
+}
+
+function selectedPages(ranges: PageRange[]) {
+  return ranges.reduce((total, range) => total + range.end - range.start + 1, 0);
+}
+
+function rangesAreValid(document: DocumentItem) {
+  return document.pageRanges.length > 0
+    && document.pageRanges.every((range) => Number.isInteger(range.start) && Number.isInteger(range.end) && range.start >= 1 && range.end >= range.start && range.end <= document.pageCount)
+    && document.pageRanges.every((range, index) => index === 0 || range.start > document.pageRanges[index - 1].end);
+}
+
+async function detectDocxPageCount(bytes: ArrayBuffer) {
+  const zip = await JSZip.loadAsync(bytes);
+  const documentXml = await zip.file("word/document.xml")?.async("string");
+  if (!documentXml) return 1;
+  return Math.max(1, (documentXml.match(/lastRenderedPageBreak|w:type="page"/g) ?? []).length + 1);
+}
 
 function formatPHP(amount: number | string) {
   return new Intl.NumberFormat("en-PH", { style: "currency", currency: "PHP" }).format(Number(amount));
@@ -70,6 +95,8 @@ export default function OrderPage() {
   const [selectedShop, setSelectedShop] = useState<number | null>(null);
   const [detailsShop, setDetailsShop] = useState<Shop | null>(null);
   const [files, setFiles] = useState<DocumentItem[]>([]);
+  const [previewIndex, setPreviewIndex] = useState(0);
+  const [previewPage, setPreviewPage] = useState(1);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const [paper, setPaper] = useState("A4");
@@ -82,11 +109,12 @@ export default function OrderPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isReading, setIsReading] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const previewRef = useRef<HTMLDivElement>(null);
   const shop = shops.find((item) => item.id === selectedShop);
   const visibleShops = useMemo(() => shops.filter((item) => `${item.name} ${item.address}`.toLowerCase().includes(query.toLowerCase())), [shops, query]);
   const paperOptions = shop?.paperSizes ?? ["A4", "A3", "A5", "A2", "A1", "A0", "Short", "Long", "Letter", "Legal"];
   const priceOption = shop?.prices.find((price) => price.colorMode === color);
-  const selectedPageCount = files.reduce((sum, document) => sum + document.pageCount, 0);
+  const selectedPageCount = files.reduce((sum, document) => sum + selectedPages(document.pageRanges), 0);
   const estimatedPrintTotal = priceOption ? selectedPageCount * copies * priceOption.price : null;
   const estimatedTotal = estimatedPrintTotal === null ? null : estimatedPrintTotal + (priority && shop ? shop.priorityFee : 0);
 
@@ -137,8 +165,9 @@ export default function OrderPage() {
     const accepted: DocumentItem[] = [];
     let addedBytes = 0;
     for (const file of Array.from(incoming)) {
-      if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
-        setError(`${file.name} is not a PDF. Please select PDF files only.`);
+      const extension = extensionOf(file.name);
+      if (![".pdf", ".doc", ".docx", ".jpg", ".jpeg", ".png", ".webm"].includes(extension)) {
+        setError(`${file.name} is not supported. Choose PDF, Word, JPG, PNG, or WEBM files.`);
         continue;
       }
       if (file.size < 1 || file.size > 20 * 1024 * 1024) {
@@ -150,10 +179,15 @@ export default function OrderPage() {
         continue;
       }
       try {
-        const parsed = await PDFDocument.load(await file.arrayBuffer());
-        const pageCount = parsed.getPageCount();
+        const bytes = await file.arrayBuffer();
+        const parsed = extension === ".pdf" ? await PDFDocument.load(bytes) : null;
+        const pageCount = parsed?.getPageCount() ?? (extension === ".docx" ? await detectDocxPageCount(bytes) : 1);
         if (!pageCount) throw new Error("This PDF has no pages.");
-        accepted.push({ file, pageCount });
+        const previewUrl = URL.createObjectURL(file);
+        const previewHtml = extension === ".docx"
+          ? (await mammoth.convertToHtml({ arrayBuffer: bytes })).value
+          : undefined;
+        accepted.push({ file, pageCount, pageRanges: [{ start: 1, end: 1 }], previewUrl, previewHtml });
         addedBytes += file.size;
       } catch {
         setError(`${file.name} could not be opened. It may be damaged or password-protected.`);
@@ -161,7 +195,7 @@ export default function OrderPage() {
     }
     setFiles((current) => {
       const merged = [...current, ...accepted].filter((item, index, all) => all.findIndex((other) => other.file.name === item.file.name && other.file.size === item.file.size) === index);
-      if (merged.length > 5) setError("You can upload up to 5 PDFs per order.");
+      if (merged.length > 5) setError("You can upload up to 5 files per order.");
       return merged.slice(0, 5);
     });
     if (fileInput.current) fileInput.current.value = "";
@@ -171,7 +205,8 @@ export default function OrderPage() {
   function continueTo(next: number) {
     setError("");
     if (step === 0 && !selectedShop) return setError("Choose a print shop to continue.");
-    if (step === 1 && files.length === 0) return setError("Upload at least one PDF to continue.");
+    if (step === 1 && files.length === 0) return setError("Upload at least one file to continue.");
+    if (step === 1 && files.some((document) => !rangesAreValid(document))) return setError("Check each page range. Ranges must be ordered, non-overlapping, and within the file's page count.");
     if (step === 2 && (!priceOption || priceOption.price <= 0)) return setError("This shop has not configured a price for that printing mode.");
     if (step === 2 && (!Number.isInteger(copies) || copies < 1 || copies > 999)) return setError("Copies must be a whole number between 1 and 999.");
     setStep(next);
@@ -190,6 +225,7 @@ export default function OrderPage() {
       form.set("orientation", orientation);
       form.set("priority", String(priority));
       form.set("quotedTotalCents", String(Math.round((estimatedTotal ?? 0) * 100)));
+      form.set("pageRanges", JSON.stringify(files.map((document) => document.pageRanges)));
       for (const document of files) form.append("documents", document.file, document.file.name);
       const response = await fetch("/api/orders", { method: "POST", body: form });
       const body = await response.json();
@@ -228,6 +264,8 @@ export default function OrderPage() {
     setStep(0);
     setSelectedShop(null);
     setFiles([]);
+    setPreviewIndex(0);
+    setPreviewPage(1);
     setPaper("A4");
     setColor("black_white");
     setCopies(1);
@@ -235,6 +273,52 @@ export default function OrderPage() {
     setPriority(false);
     setOrderResult(null);
     setError("");
+  }
+
+  function updatePageRange(documentIndex: number, rangeIndex: number, field: "start" | "end", value: number) {
+    setFiles((current) => current.map((document, index) => {
+      if (index !== documentIndex) return document;
+      const pageRanges = document.pageRanges.map((range, currentRangeIndex) => currentRangeIndex === rangeIndex ? { ...range, [field]: value } : range);
+      return { ...document, pageRanges };
+    }));
+  }
+
+  function addPageRange(documentIndex: number) {
+    setFiles((current) => current.map((document, index) => index === documentIndex
+      ? { ...document, pageRanges: [...document.pageRanges, { start: Math.min(document.pageCount, (document.pageRanges[document.pageRanges.length - 1]?.end ?? 1) + 1), end: document.pageCount }] }
+      : document));
+  }
+
+  function removePageRange(documentIndex: number, rangeIndex: number) {
+    setFiles((current) => current.map((document, index) => index === documentIndex
+      ? { ...document, pageRanges: document.pageRanges.filter((_, currentRangeIndex) => currentRangeIndex !== rangeIndex) }
+      : document));
+  }
+
+  function previewFile(index: number, page = 1) {
+    setPreviewIndex(index);
+    setPreviewPage(Math.max(1, Math.min(page, files[index]?.pageCount ?? 1)));
+    window.requestAnimationFrame(() => previewRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
+  }
+
+  function removeFile(target: DocumentItem) {
+    URL.revokeObjectURL(target.previewUrl);
+    const next = files.filter((item) => item !== target);
+    setFiles(next);
+    setPreviewIndex((index) => Math.min(index, Math.max(0, next.length - 1)));
+    setPreviewPage(1);
+  }
+
+  function clampPageRange(documentIndex: number, rangeIndex: number, field: "start" | "end") {
+    setFiles((current) => current.map((document, index) => {
+      if (index !== documentIndex) return document;
+      const pageRanges = document.pageRanges.map((range, currentRangeIndex) => {
+        if (currentRangeIndex !== rangeIndex) return range;
+        const value = Math.min(document.pageCount, Math.max(1, Math.trunc(Number(range[field])) || 1));
+        return field === "start" ? { start: Math.min(value, range.end), end: range.end } : { start: range.start, end: Math.max(value, range.start) };
+      });
+      return { ...document, pageRanges };
+    }));
   }
 
   return (
@@ -292,13 +376,59 @@ export default function OrderPage() {
             </>}
 
             {step === 1 && <>
-              <div className="card-heading"><div><span className="step-overline">STEP 02 · YOUR DOCUMENTS</span><h2>Upload your PDFs</h2><p>Add the documents you want {shop?.name ?? "this shop"} to print.</p></div><span className="card-heading-icon">↥</span></div>
+              <div className="card-heading"><div><span className="step-overline">STEP 02 · YOUR DOCUMENTS</span><h2>Upload your files</h2><p>Add the documents you want {shop?.name ?? "this shop"} to print.</p></div><span className="card-heading-icon">↥</span></div>
               <div className="upload-zone" onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); void addFiles(event.dataTransfer.files); }}>
-                <input ref={fileInput} type="file" accept="application/pdf,.pdf" multiple onChange={(event) => void addFiles(event.target.files)} aria-label="Choose PDF files" />
-                <span className="upload-icon">↥</span><strong>{isReading ? "Checking your PDFs…" : "Drop your PDFs here"}</strong><span>or <button type="button" disabled={isReading} onClick={() => fileInput.current?.click()}>browse files</button> from your device</span><small>PDF only · Up to 20 MB each · 5 files per order</small>
+                <input ref={fileInput} type="file" accept={acceptedFileTypes} multiple onChange={(event) => void addFiles(event.target.files)} aria-label="Choose print files" />
+                <span className="upload-icon">↥</span><strong>{isReading ? "Checking your files…" : "Drop your files here"}</strong><span>or <button type="button" disabled={isReading} onClick={() => fileInput.current?.click()}>browse files</button> from your device</span><small>PDF, Word, JPG, PNG, or WEBM · Up to 20 MB each · 5 files per order</small>
               </div>
-              {files.length > 0 && <div className="uploaded-files"><div className="file-list-heading"><strong>Your documents <span>{files.length}</span></strong><small>Page counts checked</small></div>{files.map((item) => <div className="uploaded-file" key={`${item.file.name}-${item.file.size}`}><span className="pdf-tile">PDF</span><span className="uploaded-file-info"><strong>{item.file.name}</strong><small>{(item.file.size / (1024 * 1024)).toFixed(2)} MB · {item.pageCount} {item.pageCount === 1 ? "page" : "pages"}</small></span><button type="button" aria-label={`Remove ${item.file.name}`} onClick={() => setFiles((current) => current.filter((file) => file !== item))}>×</button></div>)}</div>}
-              <div className="upload-privacy"><span>♧</span><p>PDF contents are checked again on the server. Files are saved outside the public website folder.</p></div>
+              {files.length > 0 && <div className="uploaded-files">
+                <div className="file-list-heading"><strong>Your documents <span>{files.length}</span></strong><small>Page selections checked before ordering</small></div>
+                {files.map((item, index) => <div className="uploaded-file" key={`${item.file.name}-${item.file.size}`}>
+                  <span className="pdf-tile">{extensionOf(item.file.name).replace(".", "").toUpperCase()}</span>
+                  <div className="uploaded-file-main">
+                    <div className="uploaded-file-top">
+                      <div className="uploaded-file-info"><strong title={item.file.name}>{item.file.name}</strong><small>{(item.file.size / (1024 * 1024)).toFixed(2)} MB · {item.pageCount} {item.pageCount === 1 ? "page" : "pages"} · {selectedPages(item.pageRanges)} selected</small></div>
+                      <div className="uploaded-file-actions">
+                        <button type="button" className={`preview-file-button ${previewIndex === index ? "active" : ""}`} onClick={() => previewFile(index)}>Preview</button>
+                        <button type="button" className="remove-file-button" aria-label={`Remove ${item.file.name}`} onClick={() => removeFile(item)}>×</button>
+                      </div>
+                    </div>
+                    <div className="page-range-editor">
+                      <span className="page-range-label">Print pages</span>
+                      {item.pageRanges.map((range, rangeIndex) => <span className="page-range-row" key={`${index}-${rangeIndex}`}>
+                        <input type="number" min="1" max={item.pageCount} inputMode="numeric" value={range.start} aria-label={`Start page for range ${rangeIndex + 1} of ${item.file.name}`} onFocus={(event) => event.currentTarget.select()} onChange={(event) => updatePageRange(index, rangeIndex, "start", Number(event.target.value))} onBlur={() => clampPageRange(index, rangeIndex, "start")} />
+                        <span className="range-sep">–</span>
+                        <input type="number" min="1" max={item.pageCount} inputMode="numeric" value={range.end} aria-label={`End page for range ${rangeIndex + 1} of ${item.file.name}`} onFocus={(event) => event.currentTarget.select()} onChange={(event) => updatePageRange(index, rangeIndex, "end", Number(event.target.value))} onBlur={() => clampPageRange(index, rangeIndex, "end")} />
+                        {item.pageRanges.length > 1 && <button type="button" onClick={() => removePageRange(index, rangeIndex)} aria-label={`Remove page range ${rangeIndex + 1}`}>×</button>}
+                      </span>)}
+                      <button type="button" className="add-page-range" onClick={() => addPageRange(index)}>+ Add range</button>
+                    </div>
+                  </div>
+                </div>)}
+              </div>}
+              {files.length > 0 && files[previewIndex] && (() => {
+                const previewDocument = files[previewIndex];
+                const previewExtension = extensionOf(previewDocument.file.name);
+                const isPaged = previewExtension === ".pdf";
+                return <div className="file-preview" ref={previewRef}>
+                  <div className="file-list-heading">
+                    <div className="preview-heading-info"><strong title={previewDocument.file.name}>{previewDocument.file.name}</strong><small>{isPaged ? `Page ${previewPage} of ${previewDocument.pageCount}` : previewExtension === ".webm" ? "Video preview" : `${previewDocument.pageCount} ${previewDocument.pageCount === 1 ? "page" : "pages"}`}</small></div>
+                    {isPaged && <div className="preview-page-nav">
+                      <button type="button" disabled={previewPage <= 1} onClick={() => setPreviewPage((page) => Math.max(1, page - 1))} aria-label="Previous page">‹</button>
+                      <span className="preview-page-count">Page {previewPage} / {previewDocument.pageCount}</span>
+                      <button type="button" disabled={previewPage >= previewDocument.pageCount} onClick={() => setPreviewPage((page) => Math.min(previewDocument.pageCount, page + 1))} aria-label="Next page">›</button>
+                    </div>}
+                  </div>
+                  <div className="preview-frame">
+                    {previewExtension === ".pdf" && <iframe key={`${previewDocument.file.name}-${previewPage}`} title={`Preview of ${previewDocument.file.name}`} src={`${previewDocument.previewUrl}#page=${previewPage}&view=FitH`} />}
+                    {[".jpg", ".jpeg", ".png"].includes(previewExtension) && <img src={previewDocument.previewUrl} alt={`Preview of ${previewDocument.file.name}`} />}
+                    {previewExtension === ".webm" && <video controls src={previewDocument.previewUrl} />}
+                    {previewExtension === ".docx" && <iframe className="word-preview" title={`Preview of ${previewDocument.file.name}`} sandbox="" srcDoc={previewDocument.previewHtml ?? "<p>Word preview is unavailable in this browser.</p>"} />}
+                    {previewExtension === ".doc" && <p>Preview is unavailable for legacy .doc files. The file can still be submitted for printing.</p>}
+                  </div>
+                </div>;
+              })()}
+              <div className="upload-privacy"><span>♧</span><p>Files are checked again on the server and saved outside the public website folder. For PDF and Word files, select one or more page ranges to print.</p></div>
             </>}
 
             {step === 2 && <>

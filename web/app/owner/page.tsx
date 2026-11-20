@@ -27,7 +27,7 @@ async function DashboardContent() {
   });
   const peakHour = Math.max(...hourly, 0);
 
-  return <OwnerShell ownerName={owner.fullName} shopName={owner.shopName} active="dashboard">
+  return <OwnerShell ownerName={owner.fullName} shopName={owner.shopName} shopActive={owner.shopActive} active="dashboard">
     <div className="owner-page-content">
       <div className="owner-page-heading"><div><div className="owner-date-line">SHOP OVERVIEW</div><h1>Good to see you, {owner.fullName.split(" ")[0]}.</h1><p>Here’s what’s happening at {owner.shopName} today.</p></div><Link href="/owner/services" className="owner-primary-link">View services <span>→</span></Link></div>
       <section className="owner-metrics" aria-label="Shop performance">

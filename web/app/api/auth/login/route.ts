@@ -70,7 +70,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Email or password is incorrect." }, { status: 401 });
     }
 
-    const [shops] = await db.query<(RowDataPacket & { id: number })[]>(`SELECT id FROM shops WHERE owner_id = ? AND is_active = 1 ORDER BY id LIMIT 1`, [user.id]);
+    const [shops] = await db.query<(RowDataPacket & { id: number })[]>(`SELECT id FROM shops WHERE owner_id = ? ORDER BY id LIMIT 1`, [user.id]);
 
     const session = await getOwnerSession();
     session.userId = user.id;

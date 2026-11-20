@@ -45,7 +45,7 @@ export async function POST(request: Request) {
   try {
     await connection.beginTransaction();
     const [shops] = await connection.query<(RowDataPacket & { id: number })[]>(`SELECT id FROM shops
-      WHERE owner_id = ? AND is_active = 1 ORDER BY id LIMIT 1 FOR UPDATE`, [session.userId]);
+      WHERE owner_id = ? ORDER BY id LIMIT 1 FOR UPDATE`, [session.userId]);
     const shop = shops[0];
     if (!shop) {
       await connection.rollback();

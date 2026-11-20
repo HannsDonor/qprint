@@ -14,6 +14,7 @@ export type OwnerContext = {
   shopName: string;
   shopAddress: string;
   shopDescription: string | null;
+  shopActive: boolean;
 };
 
 function mysqlBoolean(value: unknown) {
@@ -25,13 +26,13 @@ export async function getOwnerContext(): Promise<OwnerContext> {
   await connection();
   const session = await getOwnerSession();
   if (!session.userId || session.role !== "shop_owner") redirect("/login");
-  const [rows] = await db.query<(RowDataPacket & OwnerContext)[]>(`SELECT u.id AS userId, u.full_name AS fullName, u.email,
-      s.id AS shopId, s.shop_name AS shopName, s.address AS shopAddress, s.description AS shopDescription
+  const [rows] = await db.query<(RowDataPacket & Omit<OwnerContext, "shopActive"> & { shopActive: unknown })[]>(`SELECT u.id AS userId, u.full_name AS fullName, u.email,
+      s.id AS shopId, s.shop_name AS shopName, s.address AS shopAddress, s.description AS shopDescription, s.is_active AS shopActive
     FROM users u INNER JOIN shops s ON s.owner_id = u.id
-    WHERE u.id = ? AND u.role = 'shop_owner' AND u.is_active = 1 AND s.is_active = 1
+    WHERE u.id = ? AND u.role = 'shop_owner' AND u.is_active = 1
     ORDER BY s.id ASC LIMIT 1`, [session.userId]);
   if (!rows[0]) redirect("/login?reason=no-shop");
-  return rows[0];
+  return { ...rows[0], shopActive: mysqlBoolean(rows[0].shopActive) };
 }
 
 export async function getOwnerDashboardData(shopId: number) {

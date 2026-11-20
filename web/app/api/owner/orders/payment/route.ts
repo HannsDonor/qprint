@@ -28,7 +28,7 @@ export async function POST(request: Request) {
       id: number; shop_id: number; status: string; total_price: string; expires_at: Date | null;
     })[]>(`SELECT j.id, j.shop_id, j.status, j.total_price, j.expires_at
       FROM print_jobs j INNER JOIN shops s ON s.id = j.shop_id
-      WHERE j.id = ? AND s.owner_id = ? AND s.is_active = 1 LIMIT 1 FOR UPDATE`, [jobId, session.userId]);
+      WHERE j.id = ? AND s.owner_id = ? LIMIT 1 FOR UPDATE`, [jobId, session.userId]);
     const job = jobs[0];
     if (!job) throw new Error("That order does not belong to your shop.");
     if (job.expires_at && new Date(job.expires_at).getTime() < Date.now()) throw new Error("This print order has expired.");

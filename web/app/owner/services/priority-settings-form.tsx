@@ -35,7 +35,11 @@ export default function PrioritySettingsForm({ initialEnabled, initialFee }: { i
 
   return <form className="priority-settings-form" onSubmit={submit}>
     <div className="priority-settings-copy"><strong>Priority Processing</strong><span>Paid priority orders are placed ahead of standard waiting orders. They are not guaranteed an exact completion time.</span></div>
-    <label className="priority-toggle"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} /><span><b>{enabled ? "Enabled" : "Disabled"}</b><small>New customers {enabled ? "can select" : "cannot select"} priority processing.</small></span></label>
+    <label className={`priority-toggle ${enabled ? "is-on" : "is-off"}`}>
+      <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
+      <span className="priority-toggle-switch" aria-hidden="true"><i /></span>
+      <span className="priority-toggle-copy"><b>{enabled ? "Priority is ON" : "Priority is OFF"}</b><small>New customers {enabled ? "can select" : "cannot select"} priority processing.</small></span>
+    </label>
     <label className="priority-fee-field"><span>ADDITIONAL FEE (PHP)</span><input type="number" min="0" max="99999999.99" step="0.01" value={fee} onChange={(event) => setFee(event.target.value)} required /></label>
     {error && <p className="service-form-error" role="alert">{error}</p>}
     {message && <p className="service-form-success" role="status">{message}</p>}

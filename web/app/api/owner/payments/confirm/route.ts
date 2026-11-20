@@ -33,7 +33,7 @@ export async function POST(request: Request) {
       id: number; shop_id: number; qr_token_hash: string; status: string; total_price: string; expires_at: Date | null;
     })[]>(`SELECT j.id, j.shop_id, j.qr_token_hash, j.status, j.total_price, j.expires_at
       FROM print_jobs j INNER JOIN shops s ON s.id = j.shop_id
-      WHERE j.job_code = ? AND s.owner_id = ? AND s.is_active = 1 LIMIT 1 FOR UPDATE`, [jobCode, session.userId]);
+      WHERE j.job_code = ? AND s.owner_id = ? LIMIT 1 FOR UPDATE`, [jobCode, session.userId]);
     const job = jobs[0];
     if (!job || !matchesToken(qrToken, job.qr_token_hash)) throw new Error("That QR code is not valid for this shop.");
     if (job.expires_at && new Date(job.expires_at).getTime() < Date.now()) throw new Error("This print order has expired.");

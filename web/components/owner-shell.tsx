@@ -1,8 +1,9 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import OwnerLogout from "@/components/owner-logout";
+import ShopStatusToggle from "@/components/shop-status-toggle";
 
-export default function OwnerShell({ children, ownerName, shopName, active }: { children: ReactNode; ownerName: string; shopName: string; active: "dashboard" | "services" | "orders" | "scanner" | "queue" }) {
+export default function OwnerShell({ children, ownerName, shopName, shopActive, active }: { children: ReactNode; ownerName: string; shopName: string; shopActive: boolean; active: "dashboard" | "services" | "orders" | "scanner" | "queue" }) {
   return (
     <main className="owner-app">
       <aside className="owner-sidebar">
@@ -18,7 +19,7 @@ export default function OwnerShell({ children, ownerName, shopName, active }: { 
         </nav>
         <div className="owner-sidebar-bottom"><div className="owner-support-card"><span>?</span><strong>Need help?</strong><small>We’re here to help you get set up.</small></div><div className="owner-profile"><span className="owner-profile-avatar">{ownerName.split(/\s+/).map((part) => part[0]).slice(0, 2).join("").toUpperCase()}</span><span><strong>{ownerName}</strong><small>Shop owner</small></span><OwnerLogout /></div></div>
       </aside>
-      <section className="owner-workspace"><header className="owner-topbar"><div><span className="owner-topbar-shop">{shopName}</span><span className="owner-online"><i /> Shop active</span></div><Link href="/" className="owner-view-site">View public site <span>↗</span></Link></header>{children}</section>
+      <section className="owner-workspace"><header className="owner-topbar"><div><span className="owner-topbar-shop">{shopName}</span><ShopStatusToggle initialActive={shopActive} /></div><Link href="/" className="owner-view-site">View public site <span>↗</span></Link></header>{children}</section>
     </main>
   );
 }
